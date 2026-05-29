@@ -1,21 +1,50 @@
 const express = require('express');
-const path = require('path');
-const indexRouter = require('./routes/index');
+const http = require('http');
+const WebSocket = require('ws');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server, path: '/ws' });
 
-// Serve static files from the "public" directory
-app.use(express.static(path.join(__dirname, 'public')));
+const TOKEN = process.env.BRIDGE_TOKEN || 'qantara2026';
+let nodeSocket = null;
+const browserSockets = new Map();
 
-// Use the router for handling routes
-app.use('/', indexRouter);
+app.get('/health', (req, res) => res.json({ status: 'ok', nodeConnected: !!nodeSocket }));
 
-// Catch-all route for handling 404 errors
-app.use((req, res, next) => {
-    res.status(404).sendFile(path.join(__dirname, 'views', '404.html'));
+wss.on('connection', (ws) => {
+  ws.on('message', (raw) => {
+    try {
+      const data = JSON.parse(raw);
+      if (data.type === 'register' && data.token === TOKEN) {
+        nodeSocket = ws;
+        ws.isNode = true;
+        ws.send(JSON.stringify({ type: 'registered', node: data.node }));
+        console.log(`[${new Date().toISOString()}] Node registered: ${data.node}`);
+      } else if (data.type === 'browser') {
+        ws.isBrowser = true;
+        browserSockets.set(ws, true);
+        ws.send(JSON.stringify({ type: 'ready', nodeConnected: !!nodeSocket }));
+      } else if (data.type === 'shell' && ws.isBrowser) {
+        if (!nodeSocket) {
+          ws.send(JSON.stringify({ type: 'result', id: data.id, output: '', error: 'Node not connected', code: -1 }));
+          return;
+        }
+        nodeSocket._pendingSender = ws;
+        data._browserId = [...browserSockets.keys()].indexOf(ws);
+        nodeSocket.send(JSON.stringify(data));
+      } else if (data.type === 'result' && ws.isNode) {
+        browserSockets.forEach((_, bws) => {
+          if (bws.readyState === WebSocket.OPEN) bws.send(JSON.stringify(data));
+        });
+      }
+    } catch(e) { console.error(e); }
   });
-
-app.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}/`);
+  ws.on('close', () => {
+    if (ws.isNode) { nodeSocket = null; console.log('Node disconnected'); }
+    if (ws.isBrowser) browserSockets.delete(ws);
+  });
 });
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => console.log(`Relay running on ${PORT}`));
