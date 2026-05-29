@@ -11,7 +11,19 @@ let nodeSocket = null;
 const browserSockets = new Map();
 
 app.get('/health', (req, res) => res.json({ status: 'ok', nodeConnected: !!nodeSocket }));
-
+// app.js'e ekle - wss.on('connection') satırından önce
+app.post('/status', express.json(), (req, res) => {
+  const status = req.body;
+  status.received_at = new Date().toISOString();
+  console.log('[STATUS]', JSON.stringify(status));
+  // broadcast to all browsers
+  browserSockets.forEach((_, bws) => {
+    if (bws.readyState === WebSocket.OPEN) {
+      bws.send(JSON.stringify({ type: 'node_status', ...status }));
+    }
+  });
+  res.json({ ok: true });
+});
 wss.on('connection', (ws) => {
   ws.on('message', (raw) => {
     try {
